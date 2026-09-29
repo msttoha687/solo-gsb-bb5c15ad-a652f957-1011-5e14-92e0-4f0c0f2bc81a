@@ -121,6 +121,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from . import merkle
 from .db import read_tx, write_tx
 
 
@@ -1290,6 +1291,137 @@ def _diff_side_item(row, side: str):
         "end_seq": None,
         "correction_version": row[f"{side}_correction_version"],
     }
+
+
+# ---------- 快照 Merkle 验真 ----------
+
+
+def _merkle_entry(snapshot_id: str, row) -> dict:
+    """把 snapshot_items 冻结行直接映射为 v1 叶条目（文本区分 null 与 ""）。
+
+    摘要完全取自冻结列：revision / original_text / effective_text /
+    correction_version 对缺口为 NULL；缺口端点对字幕为 NULL。SQLite 空串
+    以 Python "" 返回，与 None 不同，叶编码据此区分。
+    """
+    return {
+        "snapshot_id": snapshot_id,
+        "seq": row["seq"],
+        "kind": row["kind"],
+        "revision": row["revision"],
+        "original_text": row["original_text"],
+        "effective_text": row["effective_text"],
+        "correction_version": row["correction_version"],
+        "gap_start_seq": row["start_seq"],
+        "gap_end_seq": row["end_seq"],
+    }
+
+
+def _merkle_entry_payload(entry: dict) -> dict:
+    """响应中的冻结条目（自包含快照 ID，可直接据此重算叶哈希）。"""
+    if entry["kind"] == "gap":
+        return {
+            "snapshot_id": entry["snapshot_id"],
+            "kind": "gap",
+            "seq": entry["seq"],
+            "revision": None,
+            "original_text": None,
+            "effective_text": None,
+            "correction_version": None,
+            "start_seq": entry["gap_start_seq"],
+            "end_seq": entry["gap_end_seq"],
+        }
+    return {
+        "snapshot_id": entry["snapshot_id"],
+        "kind": "subtitle",
+        "seq": entry["seq"],
+        "revision": entry["revision"],
+        "original_text": entry["original_text"],
+        "effective_text": entry["effective_text"],
+        "correction_version": entry["correction_version"],
+        "start_seq": None,
+        "end_seq": None,
+    }
+
+
+def get_snapshot_merkle(snapshot_id: str, seq: "int | None" = None) -> dict:
+    """返回快照 1..watermark 的 SHA-256 Merkle 根；指定 seq 时附包含证明。
+
+    纯只读计算，输入全部来自不可变的 snapshot_items 冻结行：
+    - seq 缺省：只返回根与树元信息；
+    - seq 给定时额外返回该序号的冻结条目、叶哈希（小写 hex）与从叶到根
+      逐层带左右方向的兄弟路径，供离线验真；
+    - 空快照（watermark=0）零叶，根为固定常量 merkle.EMPTY_ROOT；
+    - 快照不存在 -> 404 snapshot_not_found；
+      seq < 1 -> 422 invalid_seq（HTTP Query 校验之外的防御性兜底）；
+      seq > watermark -> 404 seq_out_of_snapshot。
+    """
+    if seq is not None and seq < 1:
+        raise SnapshotError(
+            "invalid_seq",
+            "seq 必须为不小于 1 的正整数",
+            status_code=422,
+        )
+
+    with read_tx() as conn:
+        meta = _get_snapshot_meta(conn, snapshot_id)
+        channel, watermark = meta["channel"], meta["watermark"]
+
+        if seq is not None and seq > watermark:
+            raise SnapshotError(
+                "seq_out_of_snapshot",
+                f"序号 {seq} 超出快照 {snapshot_id} 的水位线 {watermark}",
+                status_code=404,
+            )
+
+        rows = conn.execute(
+            """
+            SELECT seq, kind, revision, original_text, effective_text,
+                   correction_version, start_seq, end_seq
+            FROM snapshot_items
+            WHERE snapshot_id = ?
+            ORDER BY seq
+            """,
+            (snapshot_id,),
+        ).fetchall()
+
+        entries = [_merkle_entry(snapshot_id, row) for row in rows]
+        leaves = [merkle.leaf_hash(entry) for entry in entries]
+        root = merkle.merkle_root(leaves)
+
+        result = {
+            "snapshot_id": snapshot_id,
+            "channel": channel,
+            "watermark": watermark,
+            "hash_algorithm": merkle.HASH_ALGORITHM,
+            "serialization_version": merkle.SERIALIZATION_VERSION,
+            "leaf_count": watermark,
+            "merkle_root": root.hex(),
+            "empty": watermark == 0,
+        }
+        if seq is None:
+            return result
+
+        # 1..watermark 每个序号恰好一行，故下标恒为 seq-1；保留防御性查找。
+        index = seq - 1
+        if index >= len(entries) or entries[index]["seq"] != seq:
+            raise SnapshotError(
+                "seq_out_of_snapshot",
+                f"序号 {seq} 不存在于快照 {snapshot_id}",
+                status_code=404,
+            )
+        entry = entries[index]
+        path = merkle.inclusion_proof(leaves, index)
+        result["seq"] = seq
+        result["entry"] = _merkle_entry_payload(entry)
+        result["leaf_hash"] = leaves[index].hex()
+        result["proof"] = [
+            {
+                "side": side,
+                "hash": sibling.hex(),
+            }
+            for side, sibling in path
+        ]
+        return result
 
 
 # ---------- 快照敏感词遮盖 ----------

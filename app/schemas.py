@@ -398,6 +398,95 @@ class SnapshotDiffResponse(BaseModel):
     )
 
 
+# ---------- 快照 Merkle 验真 ----------
+
+
+class SnapshotMerkleEntry(BaseModel):
+    snapshot_id: str = Field(
+        ...,
+        description="所属快照 ID（叶记录首字段，使条目自包含、可直接重算叶哈希）",
+    )
+    kind: str = Field(
+        "subtitle", description="冻结条目类型：subtitle=字幕；gap=永久缺口标记"
+    )
+    seq: int
+    revision: Optional[int] = Field(None, description="原始修订号（仅字幕条目有值）")
+    original_text: Optional[str] = Field(
+        None,
+        description=(
+            "冻结的原始定稿文本（仅字幕条目有值）；空串 \"\" 与 null 是两种"
+            "不同的叶子值：字幕可为空串，缺口为 null"
+        ),
+    )
+    effective_text: Optional[str] = Field(
+        None,
+        description="冻结的生效（快照时刻最新更正）文本（仅字幕条目有值）",
+    )
+    correction_version: Optional[int] = Field(
+        None,
+        description="快照时刻最新更正版本（仅字幕条目有值；0=快照时未更正）",
+    )
+    start_seq: Optional[int] = Field(
+        None, description="缺口所属裁决区间起点（仅缺口条目有值）"
+    )
+    end_seq: Optional[int] = Field(
+        None, description="缺口所属裁决区间终点（仅缺口条目有值）"
+    )
+
+
+class SnapshotMerkleProofStep(BaseModel):
+    side: Literal["left", "right"] = Field(
+        ...,
+        description=(
+            "兄弟相对当前节点的位置：left=兄弟是左孩子（node(sibling,current)），"
+            "right=兄弟是右孩子（node(current,sibling)）；奇数层复制末叶时"
+            "该兄弟摘要等于当前节点摘要，仍按本字段照常计算"
+        ),
+    )
+    hash: str = Field(
+        ..., description="兄弟节点摘要（SHA-256，小写十六进制）"
+    )
+
+
+class SnapshotMerkleResponse(BaseModel):
+    snapshot_id: str
+    channel: str
+    watermark: int = Field(
+        ..., description="快照锁定的水位线，也是叶子总数（1..watermark 每序号一叶）"
+    )
+    hash_algorithm: str = Field("sha256", description="哈希算法，固定 sha256")
+    serialization_version: str = Field(
+        "v1", description="叶 / 内部节点规范序列化版本，见 README 的字节级定义"
+    )
+    leaf_count: int = Field(..., description="参与建树的叶子数（= watermark）")
+    merkle_root: str = Field(
+        ...,
+        description=(
+            "覆盖全部字幕与缺口叶子的 Merkle 根（SHA-256，小写十六进制）；"
+            "空快照为与快照无关的固定常量"
+        ),
+    )
+    empty: bool = Field(
+        ..., description="是否为空快照（watermark=0，根为固定空根常量）"
+    )
+    seq: Optional[int] = Field(
+        None, description="请求的 seq；未携带 seq 查询参数时为 null"
+    )
+    entry: Optional[SnapshotMerkleEntry] = Field(
+        None, description="seq 对应条目的完整冻结字段（供离线重算叶哈希）"
+    )
+    leaf_hash: Optional[str] = Field(
+        None, description="seq 对应叶子的摘要（SHA-256，小写十六进制）"
+    )
+    proof: Optional[List[SnapshotMerkleProofStep]] = Field(
+        None,
+        description=(
+            "从叶到根、逐层带左右方向的兄弟路径（自叶层向上，终于根的直接"
+            "孩子）；唯一叶的树为空数组，配合 leaf_hash==merkle_root 验真"
+        ),
+    )
+
+
 # ---------- 快照敏感词遮盖 ----------
 
 

@@ -36,6 +36,7 @@ from .schemas import (
     SnapshotDiffResponse,
     SnapshotItemsEffectiveResponse,
     SnapshotItemsResponse,
+    SnapshotMerkleResponse,
     SnapshotRedactionResponse,
     SnapshotResponse,
     SubmitResponse,
@@ -53,8 +54,9 @@ app = FastAPI(
     title="Live Subtitle Finalizer",
     summary="直播字幕定稿服务：乱序片段缓冲、按连续前缀推进水位线并定稿；"
     "支持追加式更正、不可变发布快照、快照差异、快照敏感词遮盖、"
-    "剪辑字幕导出、快照字幕引用迁移、稿件校稿对齐与命名消费者拉取游标",
-    version="1.8.0",
+    "剪辑字幕导出、快照字幕引用迁移、稿件校稿对齐、Merkle 验真"
+    "与命名消费者拉取游标",
+    version="1.9.0",
     lifespan=lifespan,
 )
 
@@ -277,6 +279,45 @@ def diff_snapshots(
     以其作为下一页的 `after` 续拉；本页为空时 `next_after=null`。
     """
     return service.diff_snapshots(snapshot_id, other, after=after, limit=limit)
+
+
+@app.get(
+    "/snapshots/{snapshot_id}/merkle",
+    response_model=SnapshotMerkleResponse,
+    responses={
+        404: {
+            "description": "快照不存在，或 seq 超出快照锁定的水位线",
+            "model": ErrorResponse,
+        },
+        422: {"description": "seq 非法（非整数或小于 1）"},
+    },
+)
+def snapshot_merkle_proof(
+    snapshot_id: str,
+    seq: Union[int, None] = Query(
+        None,
+        ge=1,
+        description=(
+            "可选：指定后同时返回该序号的冻结条目、叶哈希与带左右方向的"
+            "兄弟包含路径；缺省只返回 Merkle 根"
+        ),
+    ),
+) -> dict:
+    """快照内容的 SHA-256 Merkle 根与单条包含证明（只读，结果确定）。
+
+    - 根覆盖快照 1..watermark 的全部叶子：字幕与缺口严格按 seq 升序各占
+      一叶（缺口叶子固化裁决区间端点，字幕叶子固化修订号、原始 / 生效
+      文本与快照时刻更正版本，null 与空文本是不同叶值）；
+    - 空快照（watermark=0）返回与快照 ID 无关的固定空根；
+    - 叶与内部节点采用不同域分离前缀，奇数层复制末叶，唯一叶的树根就是
+      该叶哈希；完整跨语言字节级序列化规范见 README「快照 Merkle 验真」；
+    - 计算只读不可变冻结数据：后续定稿 / 更正 / 缺口裁决不会改变旧快照
+      的根与证明，相同请求结果确定；
+    - 携带 seq 时额外返回冻结条目、`leaf_hash` 与逐层 `proof`（兄弟节点
+      的 hex 摘要 + `left`/`right` 方向），下游可离线重算到根；
+    - 快照不存在或 seq 超出水位线返回 404；seq 非整数或 <1 返回 422。
+    """
+    return service.get_snapshot_merkle(snapshot_id, seq=seq)
 
 
 @app.post(
