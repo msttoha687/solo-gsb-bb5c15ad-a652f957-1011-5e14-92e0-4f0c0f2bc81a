@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from typing import Literal, Union
+from typing import Literal, Optional, Union
 
 from fastapi import FastAPI, Query, Response
 from fastapi.responses import JSONResponse
@@ -36,6 +36,8 @@ from .schemas import (
     SnapshotDiffResponse,
     SnapshotItemsEffectiveResponse,
     SnapshotItemsResponse,
+    SnapshotMerkleProofResponse,
+    SnapshotMerkleRootResponse,
     SnapshotRedactionResponse,
     SnapshotResponse,
     SubmitResponse,
@@ -53,8 +55,9 @@ app = FastAPI(
     title="Live Subtitle Finalizer",
     summary="直播字幕定稿服务：乱序片段缓冲、按连续前缀推进水位线并定稿；"
     "支持追加式更正、不可变发布快照、快照差异、快照敏感词遮盖、"
-    "剪辑字幕导出、快照字幕引用迁移、稿件校稿对齐与命名消费者拉取游标",
-    version="1.8.0",
+    "剪辑字幕导出、快照字幕引用迁移、稿件校稿对齐、快照 Merkle 封存验真"
+    "与命名消费者拉取游标",
+    version="1.9.0",
     lifespan=lifespan,
 )
 
@@ -246,6 +249,48 @@ def get_snapshot_items(
 def list_snapshot_corrections(snapshot_id: str, seq: int) -> dict:
     """查询快照内某字幕序号在快照时刻冻结的全部更正版本（按 version 升序）。"""
     return service.list_snapshot_corrections(snapshot_id, seq)
+
+
+@app.get(
+    "/snapshots/{snapshot_id}/merkle",
+    response_model=Union[
+        SnapshotMerkleProofResponse,
+        SnapshotMerkleRootResponse,
+    ],
+    responses={
+        404: {"description": "快照不存在，或 seq 超出快照水位线", "model": ErrorResponse},
+        422: {"description": "seq 查询参数非法（非整数或小于 1）"},
+    },
+)
+def get_snapshot_merkle(
+    snapshot_id: str,
+    seq: Optional[int] = Query(
+        None,
+        ge=1,
+        description="可选：指定条目序号（1..watermark）。给出时额外返回该 seq 的"
+        "冻结条目、叶哈希及带左右方向（含奇数层末叶复制标记）的兄弟路径；"
+        "不传则只返回 Merkle 根",
+    ),
+) -> dict:
+    """快照 SHA-256 Merkle 封存根 / 单条包含证明（纯只读，不修改快照）。
+
+    叶子按 seq=1..watermark 顺序覆盖全部字幕与缺口（统一占叶位），叶负载
+    为固定 9 键（snapshot_id、seq、kind、revision、original_text、
+    effective_text、correction_version、gap_start、gap_end）的跨语言可复算
+    规范序列化（canonical JSON 紧凑串 + UTF-8），缺口叶的字幕字段是 null
+    （与空文本 "" 区分）。叶子与内部节点采用不同域前缀：
+
+    - leaf = SHA-256(UTF-8("snapshot-merkle:v1:leaf:") || 规范负载字节)
+    - node = SHA-256(UTF-8("snapshot-merkle:v1:node:") ||
+                     左 32 字节原始摘要 || 右 32 字节原始摘要)
+
+    每层自左向右两两配对，奇数层（长度 > 1）复制末叶与自身配对；单叶树
+    的根即叶摘要；空快照（watermark=0）返回固定根
+    SHA-256(UTF-8("snapshot-merkle:v1:empty"))。证明路径每步含
+    level / side(left|right) / hash / duplicated，供下游离线复算到根。
+    全部数据来自快照冻结表：快照创建后的定稿、更正与缺口均不改变旧根。
+    """
+    return service.snapshot_merkle(snapshot_id, seq)
 
 
 @app.get(

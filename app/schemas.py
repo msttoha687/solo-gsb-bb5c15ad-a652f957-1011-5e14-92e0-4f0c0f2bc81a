@@ -652,6 +652,101 @@ class ScriptAlignmentResponse(BaseModel):
     )
 
 
+# ---------- 快照 Merkle 封存 ----------
+
+
+class MerkleLeaf(BaseModel):
+    """叶子负载（同时也是快照冻结条目）：字幕 / 缺口共用同一固定 9 键集。
+
+    缺口叶的 revision / original_text / effective_text / correction_version
+    恒为 null（JSON null，与空文本 "" 严格区分），gap_start / gap_end
+    为裁决区间端点；字幕叶相反，gap_start / gap_end 为 null。
+    """
+
+    snapshot_id: str
+    seq: int = Field(..., description="叶子序号，1..watermark，与叶下标 = seq-1 对应")
+    kind: Literal["subtitle", "gap"] = Field(
+        ..., description="条目类型：subtitle=字幕；gap=永久缺口标记"
+    )
+    revision: Optional[int] = Field(None, description="原始修订号（仅字幕叶非 null）")
+    original_text: Optional[str] = Field(
+        None,
+        description="快照冻结的原始定稿文本（仅字幕叶非 null；缺口叶为 null，不是空串）",
+    )
+    effective_text: Optional[str] = Field(
+        None,
+        description="快照时刻冻结的生效文本（仅字幕叶非 null；空文本为 '' 而非 null）",
+    )
+    correction_version: Optional[int] = Field(
+        None,
+        description="快照时刻的更正版本（仅字幕叶非 null，0=未更正）；缺口叶为 null",
+    )
+    gap_start: Optional[int] = Field(None, description="缺口裁决区间起点（仅缺口叶非 null）")
+    gap_end: Optional[int] = Field(None, description="缺口裁决区间终点（仅缺口叶非 null）")
+
+
+class MerkleProofStep(BaseModel):
+    level: int = Field(..., description="该兄弟所在层的层号；叶子层为 0，向上递增")
+    side: Literal["left", "right"] = Field(
+        ...,
+        description="兄弟相对当前节点的方向：left=当前节点在右、兄弟在左；"
+        "right=当前节点在左、兄弟在右",
+    )
+    hash: str = Field(..., description="兄弟节点摘要（SHA-256 小写十六进制）")
+    duplicated: bool = Field(
+        ...,
+        description="该兄弟是否为奇数层末叶的复制（仅可能出现在 side=right 步，"
+        "此时 hash 等于当前节点摘要，父节点为 H(x,x)）",
+    )
+
+
+class MerkleProof(BaseModel):
+    root: str = Field(..., description="树根（与根响应一致，供直接比对）")
+    path: List[MerkleProofStep] = Field(
+        ..., description="自叶向根的兄弟路径；单叶快照为空数组"
+    )
+
+
+class SnapshotMerkleRootResponse(BaseModel):
+    mode: Literal["root"] = Field("root")
+    scheme: str = Field(
+        ...,
+        description="封存方案标识（含版本）：snapshot-merkle:v1",
+    )
+    hash_algorithm: str = Field(..., description="摘要算法：SHA-256")
+    hash_encoding: str = Field(..., description="摘要编码：hex（小写十六进制）")
+    snapshot_id: str
+    channel: str
+    watermark: int = Field(..., description="快照锁定的水位线")
+    leaf_count: int = Field(
+        ..., description="叶子数（=watermark）：1..watermark 字幕与缺口统一占叶位"
+    )
+    root: str = Field(..., description="Merkle 根（SHA-256 小写十六进制）")
+    empty: bool = Field(
+        ...,
+        description="是否为空快照（watermark=0）；空快照 root 恒为固定值 "
+        "SHA-256(UTF-8('snapshot-merkle:v1:empty'))",
+    )
+
+
+class SnapshotMerkleProofResponse(SnapshotMerkleRootResponse):
+    mode: Literal["proof"] = Field("proof")
+    seq: int = Field(..., description="请求的条目序号（1..watermark）")
+    leaf_index: int = Field(..., description="叶子下标（=seq-1，从 0 起）")
+    leaf: MerkleLeaf = Field(..., description="该 seq 的冻结条目（即叶子负载，固定 9 键）")
+    leaf_canonical_payload: str = Field(
+        ...,
+        description=(
+            "叶子负载的 UTF-8 规范序列化结果（canonical JSON 紧凑串）："
+            "leaf_hash = SHA-256('snapshot-merkle:v1:leaf:' + 该字节串)"
+        ),
+    )
+    leaf_hash: str = Field(..., description="叶子摘要（SHA-256 小写十六进制）")
+    proof: MerkleProof = Field(
+        ..., description="带左右方向（及复制标记）的兄弟路径，供离线复算到根"
+    )
+
+
 # ---------- 命名消费者拉取游标 ----------
 
 

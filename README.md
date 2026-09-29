@@ -1,6 +1,6 @@
 # Live Subtitle Finalizer — 直播字幕定稿服务
 
-基于 FastAPI + SQLite 的直播字幕定稿服务。客户端按频道提交带**序号 / 修订号 / 文本**的字幕片段，服务将乱序到达的片段放入缓冲区，只从序号 1 起按**连续前缀**推进水位线并生成**不可再修改**的定稿字幕。操作员可对确认永久丢失的序号区间发起**缺口裁决**，服务在同一事务中记录缺口并释放紧随其后的连续缓冲片段。定稿之后如需改字，可通过**追加式更正层**提交不可变的更正版本——原始定稿永远保留，下游可在原始视图与生效视图之间选择；需要一次改多处时还可调用**批量更正接口**：单事务内逐项核对、全部通过才按输入顺序追加，任一项失败整批零写入，并以频道范围内的幂等键支持安全重试。需要让下游分批拉取**同一时刻的稳定字幕**时，可对频道**发布快照**：单事务锁定水位线并冻结 1..watermark 的原始 / 生效结果、缺口标记与各条更正版本，此后任何定稿、更正或缺口都不会改变既有快照；任意两个同频道快照还可经**快照差异接口**按 seq 合并比较，只返回新增 / 移除 / 内容变更的条目。快照内容如需合规输出，可调用**快照敏感词遮盖**：基于冻结生效文本在整个快照上按码点精确匹配词表，命中码点替换为 `*` 后分页返回，全程只读。需要把冻结字幕套用到剪辑时间轴时，可调用**剪辑字幕导出**：提交全部字幕的源区间 `timings` 与有序剪辑片段 `clips`，服务把每条字幕与每个片段求交集、平移到成片累计时间后返回 cue 列表或直接输出 WebVTT 文件，全程只读。需要把旧快照里定位过的一段引用迁移到新快照时，可调用**快照字幕引用迁移**：传入源 / 目标快照及源引用的起止字幕序号与 Unicode 码点偏移（终点不含），服务按源快照冻结生效文本提取非空引用（可跨相邻字幕、不得越过缺口），再在同频道目标快照的连续字幕文本中查找完整引用——恰好一次返回对应起止序号 / 偏移，零次返回 `missing`，多次返回 `ambiguous`，全程只读。拿到定稿与稿件后需要逐行校稿时，可调用**稿件校稿对齐**：提交 1～100 条有序稿件行及每行最多合并的字幕数（1～3），服务只读快照冻结的生效文本，以 Unicode 码点编辑距离为匹配代价，用动态规划求稿件行与字幕的全局最小代价顺序对齐（每行可匹连续 1～3 条、可跳过行或字幕、不跨缺口不复用），返回每行起止序号与距离、未匹配的稿件行与字幕序号，全程只读。下游也可以注册**命名消费者拉取游标**：每个命名消费者在频道内持有独立的已确认游标，领取接口在事务中返回游标后的连续批次（含缺口标记）并签发带过期时间的租约令牌，确认后游标才推进；租约过期未确认的批次可被重新领取，实现至少一次交付。
+基于 FastAPI + SQLite 的直播字幕定稿服务。客户端按频道提交带**序号 / 修订号 / 文本**的字幕片段，服务将乱序到达的片段放入缓冲区，只从序号 1 起按**连续前缀**推进水位线并生成**不可再修改**的定稿字幕。操作员可对确认永久丢失的序号区间发起**缺口裁决**，服务在同一事务中记录缺口并释放紧随其后的连续缓冲片段。定稿之后如需改字，可通过**追加式更正层**提交不可变的更正版本——原始定稿永远保留，下游可在原始视图与生效视图之间选择；需要一次改多处时还可调用**批量更正接口**：单事务内逐项核对、全部通过才按输入顺序追加，任一项失败整批零写入，并以频道范围内的幂等键支持安全重试。需要让下游分批拉取**同一时刻的稳定字幕**时，可对频道**发布快照**：单事务锁定水位线并冻结 1..watermark 的原始 / 生效结果、缺口标记与各条更正版本，此后任何定稿、更正或缺口都不会改变既有快照；任意两个同频道快照还可经**快照差异接口**按 seq 合并比较，只返回新增 / 移除 / 内容变更的条目。快照内容如需合规输出，可调用**快照敏感词遮盖**：基于冻结生效文本在整个快照上按码点精确匹配词表，命中码点替换为 `*` 后分页返回，全程只读。需要把冻结字幕套用到剪辑时间轴时，可调用**剪辑字幕导出**：提交全部字幕的源区间 `timings` 与有序剪辑片段 `clips`，服务把每条字幕与每个片段求交集、平移到成片累计时间后返回 cue 列表或直接输出 WebVTT 文件，全程只读。需要把旧快照里定位过的一段引用迁移到新快照时，可调用**快照字幕引用迁移**：传入源 / 目标快照及源引用的起止字幕序号与 Unicode 码点偏移（终点不含），服务按源快照冻结生效文本提取非空引用（可跨相邻字幕、不得越过缺口），再在同频道目标快照的连续字幕文本中查找完整引用——恰好一次返回对应起止序号 / 偏移，零次返回 `missing`，多次返回 `ambiguous`，全程只读。拿到定稿与稿件后需要逐行校稿时，可调用**稿件校稿对齐**：提交 1～100 条有序稿件行及每行最多合并的字幕数（1～3），服务只读快照冻结的生效文本，以 Unicode 码点编辑距离为匹配代价，用动态规划求稿件行与字幕的全局最小代价顺序对齐（每行可匹连续 1～3 条、可跳过行或字幕、不跨缺口不复用），返回每行起止序号与距离、未匹配的稿件行与字幕序号，全程只读。需要向第三方证明导出字幕**确属某次发布快照**时，可拉取**快照 Merkle 封存根与包含证明**：按 seq=1..watermark 覆盖全部字幕与缺口的 SHA-256 Merkle 树返回树根，指定 seq 时同时返回该条冻结条目、叶哈希与带左右方向（含奇数层末叶复制标记）的兄弟路径；叶负载采用跨语言可复算的 UTF-8 规范序列化，叶子 / 内部节点使用不同域前缀，空快照有固定根，任何语言都可离线复算验真。下游也可以注册**命名消费者拉取游标**：每个命名消费者在频道内持有独立的已确认游标，领取接口在事务中返回游标后的连续批次（含缺口标记）并签发带过期时间的租约令牌，确认后游标才推进；租约过期未确认的批次可被重新领取，实现至少一次交付。
 
 ## 语义规则
 
@@ -88,6 +88,20 @@
 - 响应逐行给出 `matched`、`start_seq` / `end_seq`、`subtitles` 与 `distance`，另以 `unmatched_script_lines`（被跳过稿件行下标，从 0 起）与 `unmatched_subtitle_seqs`（被跳过字幕序号）列出未匹配项；空快照（无字幕）时所有稿件行被跳过，代价为各行码点数之和。
 
 
+### 快照 Merkle 封存规则（离线验真）
+
+- `GET /snapshots/{snapshot_id}/merkle` 返回快照的 SHA-256 Merkle 根；加 `?seq=N` 额外返回该序号的冻结条目、叶哈希与自叶向根的**包含证明**（兄弟路径带左右方向）。纯只读，相同请求结果确定；快照不存在返回 404，`seq` 超出快照水位线返回 404 `seq_out_of_snapshot`，`seq<1` / 非整数返回 422。
+- **叶子按 seq=1..watermark 顺序排列**，字幕与永久缺口统一各占一个叶位（`leaf_count=watermark`）；缺口不是“缺失叶子”，而是内容不同的叶子——下游因此可证明“某段内容当时确为缺口”。
+- **叶负载是固定 9 键、固定键序的对象**：`snapshot_id`、`seq`、`kind`（`subtitle`/`gap`）、`revision`、`original_text`（原始定稿文本）、`effective_text`（快照时刻生效文本）、`correction_version`（快照时刻更正版本，0=未更正）、`gap_start`、`gap_end`（缺口裁决区间端点）。字幕叶四个缺口无关字段中缺口端点为 `null`；缺口叶的字幕字段全部为 **JSON `null`**——与空文本字符串 `""` 严格区分（空字幕是合法字幕叶）。
+- **规范序列化（canonical JSON 子集，UTF-8）跨语言可复算**：紧凑无空白（`,`/`:` 分隔）、整数十进制 ASCII、对象固定键序（不排序）、字符串仅转义 `"`、`\`、`\b \f \n \r \t` 与 U+0000..U+001F（`\u00xx` 四位小写十六进制）；其余码点（含中文、emoji、U+007F、U+2028/U+2029）原样输出，**不转义非 ASCII、不做 Unicode 归一化**。该规则等价于 RFC 8785 的字符串转义 + Python `json.dumps(ensure_ascii=False, separators=(",",":"))`；Go 实现注意关闭 HTML 转义（`SetEscapeHTML(false)`）。
+- **叶子与内部节点使用不同域前缀**（域分离，叶摘要不可能被当作内部摘要复用）：
+  - 叶子 `H = SHA-256(UTF-8("snapshot-merkle:v1:leaf:") || 规范序列化字节)`；
+  - 内部 `H = SHA-256(UTF-8("snapshot-merkle:v1:node:") || 左摘要原始 32 字节 || 右摘要原始 32 字节)`（拼接的是原始字节而非十六进制串）。
+- 每层自左向右两两配对；某层节点数为**奇数且大于 1** 时把最后一个节点复制一份与自身配对（`H(x,x)`，证明中该步 `duplicated=true`、兄弟哈希与当前节点相同）；**只有一个叶子时树根即叶摘要本身**（不再哈希）；**空快照（watermark=0）固定根**为 `SHA-256(UTF-8("snapshot-merkle:v1:empty"))` = `b86d2a826337412bf3e880be522659e83d4638b1ccb5b4d0d71d59af5ac31575`，所有空快照共享。
+- 方案标识 `snapshot-merkle:v1`（响应字段 `scheme`）随根 / 证明一起返回；验真方只信 `snapshot_id` + `seq` 推导出的叶下标（`seq-1`）与冻结条目本身——证明里的 `side` / `duplicated` 都应由下标和叶子数重新推导，篡改条目、兄弟、方向、复制位或树根都会使复算失败。
+- 根只绑定**冻结数据**：`snapshot_id` 进入每个叶负载（不同快照即使内容一致根也不同），快照创建后的任何定稿、更正、缺口都不会改变旧快照根。
+
+
 ### 命名消费者拉取游标规则
 
 - 每个 `(channel, consumer)` 维护独立的已确认游标 `cursor`（初始 0）与至多一个未过期租约；消费者之间互不影响。
@@ -116,6 +130,7 @@ docker compose up --build
 - 分页拉取快照（`view=original|effective`）：`GET /snapshots/{snapshot_id}/items`
 - 快照内更正历史（版本升序）：`GET /snapshots/{snapshot_id}/items/{seq}/corrections`
 - 比较两个快照的差异：`GET /snapshots/{snapshot_id}/diff?other={other_id}`
+- 快照 Merkle 封存根 / 包含证明（离线验真）：`GET /snapshots/{snapshot_id}/merkle[?seq=N]`
 - 快照敏感词遮盖：`POST /snapshots/{snapshot_id}/redactions`
 - 剪辑字幕导出（`format=json|vtt`）：`POST /snapshots/{snapshot_id}/edits`
 - 快照字幕引用迁移：`POST /snapshots/{snapshot_id}/quote-migrations`
@@ -557,6 +572,170 @@ curl 'http://localhost:8000/snapshots/b1f3c2a4-..../diff?other=c2e4d5b6-....&aft
 | 409    | `snapshot_channel_mismatch`  | 两个快照分属不同频道，不能比较             |
 | 422    | —                            | 缺少 `other`、`after<0` 或 `limit` 越界    |
 
+### 快照 Merkle 封存根与包含证明（离线验真）
+
+下游导出字幕时，可用本接口证明“导出的单条内容确属某次发布快照”：根覆盖快照 `1..watermark` 的全部字幕与缺口；指定 `seq` 时同时给出该条冻结条目、叶哈希与一条自叶向根的兄弟路径。接口**纯只读**，只读取快照冻结表，相同请求永远返回相同结果。
+
+只取根（下游可把根随导出物一起封存 / 公布）：
+
+```bash
+curl http://localhost:8000/snapshots/c5495f87-9b83-41b0-9d5c-1070ba771cdf/merkle
+```
+
+```json
+{
+  "mode": "root",
+  "scheme": "snapshot-merkle:v1",
+  "hash_algorithm": "SHA-256",
+  "hash_encoding": "hex",
+  "snapshot_id": "c5495f87-9b83-41b0-9d5c-1070ba771cdf",
+  "channel": "news",
+  "watermark": 3,
+  "leaf_count": 3,
+  "root": "88162dc760bae9ac4bc99f1fa7ae7ca51f006b020c16204b61bc2e99d4e83c76",
+  "empty": false
+}
+```
+
+取某一条的包含证明（下例 seq=1 为已更正字幕；`leaf` 即该条冻结数据，字幕叶的 `gap_start/gap_end` 为 `null`）：
+
+```bash
+curl 'http://localhost:8000/snapshots/c5495f87-9b83-41b0-9d5c-1070ba771cdf/merkle?seq=1'
+```
+
+```json
+{
+  "mode": "proof",
+  "scheme": "snapshot-merkle:v1",
+  "hash_algorithm": "SHA-256",
+  "hash_encoding": "hex",
+  "snapshot_id": "c5495f87-9b83-41b0-9d5c-1070ba771cdf",
+  "channel": "news",
+  "watermark": 3,
+  "leaf_count": 3,
+  "root": "88162dc760bae9ac4bc99f1fa7ae7ca51f006b020c16204b61bc2e99d4e83c76",
+  "empty": false,
+  "seq": 1,
+  "leaf_index": 0,
+  "leaf": {
+    "snapshot_id": "c5495f87-9b83-41b0-9d5c-1070ba771cdf",
+    "seq": 1,
+    "kind": "subtitle",
+    "revision": 1,
+    "original_text": "第一条字幕",
+    "effective_text": "第一条字幕（更正）",
+    "correction_version": 1,
+    "gap_start": null,
+    "gap_end": null
+  },
+  "leaf_canonical_payload": "{\"snapshot_id\":\"c5495f87-9b83-41b0-9d5c-1070ba771cdf\",\"seq\":1,\"kind\":\"subtitle\",\"revision\":1,\"original_text\":\"第一条字幕\",\"effective_text\":\"第一条字幕（更正）\",\"correction_version\":1,\"gap_start\":null,\"gap_end\":null}",
+  "leaf_hash": "8d16bb9d6e17a5b12543560e367771428987992a5a4e1683947006e7815fcd80",
+  "proof": {
+    "root": "88162dc760bae9ac4bc99f1fa7ae7ca51f006b020c16204b61bc2e99d4e83c76",
+    "path": [
+      {"level": 0, "side": "right", "hash": "7669ec607428ffb71024e20c27d0a7f58fe22005d9049784b4bc0dd20aaccc0f", "duplicated": false},
+      {"level": 1, "side": "right", "hash": "19fb068eccd774743de0e79d6672445e4717e60a3609c198d6aac6af2a19b233", "duplicated": false}
+    ]
+  }
+}
+```
+
+缺口序号同样可证明（字幕字段全部为 `null`，不是 `""`；本例快照 seq 2 为区间 2..2 的永久缺口）：
+
+```json
+{
+  "seq": 2,
+  "leaf_index": 1,
+  "leaf": {
+    "snapshot_id": "c5495f87-9b83-41b0-9d5c-1070ba771cdf",
+    "seq": 2,
+    "kind": "gap",
+    "revision": null,
+    "original_text": null,
+    "effective_text": null,
+    "correction_version": null,
+    "gap_start": 2,
+    "gap_end": 2
+  },
+  "leaf_canonical_payload": "{\"snapshot_id\":\"c5495f87-9b83-41b0-9d5c-1070ba771cdf\",\"seq\":2,\"kind\":\"gap\",\"revision\":null,\"original_text\":null,\"effective_text\":null,\"correction_version\":null,\"gap_start\":2,\"gap_end\":2}",
+  "leaf_hash": "7669ec607428ffb71024e20c27d0a7f58fe22005d9049784b4bc0dd20aaccc0f",
+  "proof": {
+    "root": "88162dc760bae9ac4bc99f1fa7ae7ca51f006b020c16204b61bc2e99d4e83c76",
+    "path": [
+      {"level": 0, "side": "left", "hash": "8d16bb9d6e17a5b12543560e367771428987992a5a4e1683947006e7815fcd80", "duplicated": false},
+      {"level": 1, "side": "right", "hash": "19fb068eccd774743de0e79d6672445e4717e60a3609c198d6aac6af2a19b233", "duplicated": false}
+    ]
+  }
+}
+```
+
+- 路径每步：`level`（叶子层为 0）、`side`（兄弟相对当前节点的方向：当前节点在左时兄弟 `right`，在右时兄弟 `left`）、`hash`（兄弟摘要）、`duplicated`（该兄弟是否为奇数层末叶复制——只可能出现在 `side=right` 步且哈希等于当前节点）。上例 seq 3 是 3 叶树的末叶，其第 0 步即 `side=right, duplicated=true`（与自身配对）。
+- 空快照（`watermark=0`）根响应 `leaf_count=0, empty=true, root=b86d2a82…`（固定值）；对空快照带 `seq` 返回 404 `seq_out_of_snapshot`。
+- 错误：快照不存在 404 `snapshot_not_found`；`seq` 不是该快照 `1..watermark` 内序号返回 404 `seq_out_of_snapshot`；`seq=0`、负数、非整数返回 422。
+
+**离线验真（跨语言）**：无需本服务，任何语言按三步复算——① 用规范序列化负载重算叶哈希；② 按路径从叶向上折到根（方向 / 复制位由 `leaf_index` 与叶子数重新推导，不信任证明自报值）；③ 与公布的根逐字节比较。Python 参考实现（仅标准库）：
+
+```python
+import hashlib, json
+
+LEAF_PREFIX = b"snapshot-merkle:v1:leaf:"
+NODE_PREFIX = b"snapshot-merkle:v1:node:"
+
+def canon(obj) -> bytes:  # 规范序列化：紧凑、不转义非 ASCII（与服务端字节一致）
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+def h_leaf(entry):
+    return hashlib.sha256(LEAF_PREFIX + canon(entry)).digest()
+
+def h_node(left, right):
+    return hashlib.sha256(NODE_PREFIX + left + right).digest()
+
+def verify(entry, leaf_index, leaf_count, path, expected_root_hex):
+    cur = h_leaf(entry)
+    width, idx = leaf_count, leaf_index
+    for step in path:                       # side / duplicated 由形状重新推导
+        if width == 1:
+            return False                    # 已到根，路径不应再给出兄弟
+        dup = idx % 2 == 0 and idx + 1 >= width
+        expect_side = "right" if idx % 2 == 0 else "left"
+        if step["duplicated"] != dup or step["side"] != expect_side:
+            return False
+        raw_sib = bytes.fromhex(step["hash"])
+        if dup and raw_sib != cur:
+            return False
+        sib = cur if dup else raw_sib
+        cur = h_node(cur, sib) if idx % 2 == 0 else h_node(sib, cur)
+        width, idx = (width + 1) // 2, idx // 2
+    return width == 1 and idx == 0 and cur.hex() == expected_root_hex
+```
+
+Node.js（`JSON.stringify` 默认紧凑且不转义非 ASCII，符合本方案；叶子数为 1 时路径为空、根即叶哈希）：
+
+```js
+const crypto = require('crypto');
+const canon = (o) => Buffer.from(JSON.stringify(o), 'utf8');
+const sha = (b) => crypto.createHash('sha256').update(b).digest();
+const hLeaf = (e) => sha(Buffer.concat([Buffer.from('snapshot-merkle:v1:leaf:'), canon(e)]));
+const hNode = (l, r) => sha(Buffer.concat([Buffer.from('snapshot-merkle:v1:node:'), l, r]));
+// 路径折叠与上面 Python 版逐行对应：idx 为偶数时兄弟在右（末叶复制取 cur，
+// 否则取 hexToBytes(step.hash)），idx 为奇数时兄弟在左。
+```
+
+Go 注意使用**不转义 HTML** 的紧凑编码（否则 `&`/`<` 会被转成 `&`/`<`，叶哈希不一致），并去掉 `Encoder.Encode` 末尾换行：
+
+```go
+import "bytes"
+import "encoding/json"
+
+func canon(v any) []byte {
+    var b bytes.Buffer
+    e := json.NewEncoder(&b)
+    e.SetEscapeHTML(false)
+    if err := e.Encode(v); err != nil { panic(err) }
+    return bytes.TrimRight(b.Bytes(), "\n") // Encoder 会追加换行，必须去掉
+}
+```
+
 ### 快照敏感词遮盖
 
 对快照冻结的生效文本做敏感词遮盖，只读、不落库。请求体携带词表与分页参数：
@@ -813,7 +992,7 @@ curl http://localhost:8000/channels/news/consumers/worker-1
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                     # 含乱序、修订竞争、缺口裁决、幂等/重叠、单条/批量更正、批量整批拒绝/幂等重试/并发、版本冲突、视图合并、审计、发布快照冻结/幂等/分页/不可变、快照差异合并/分页/错误、快照敏感词遮盖/跨字幕拼接/缺口阻断/分页/校验、剪辑字幕导出交集平移/拆分/副本/排序/VTT/校验、快照字幕引用迁移提取/跨字幕/缺口阻断/found/missing/ambiguous/校验、稿件校稿对齐合并/缺口阻断/跳过/并列裁决/码点距离/校验、消费者领取/确认/租约过期/并发、并发事务等用例
+pytest                     # 含乱序、修订竞争、缺口裁决、幂等/重叠、单条/批量更正、批量整批拒绝/幂等重试/并发、版本冲突、视图合并、审计、发布快照冻结/幂等/分页/不可变、快照差异合并/分页/错误、快照敏感词遮盖/跨字幕拼接/缺口阻断/分页/校验、剪辑字幕导出交集平移/拆分/副本/排序/VTT/校验、快照字幕引用迁移提取/跨字幕/缺口阻断/found/missing/ambiguous/校验、稿件校稿对齐合并/缺口阻断/跳过/并列裁决/码点距离/校验、快照 Merkle 封存固定根/空快照/奇数层复制/包含证明方向与复制位/规范序列化/域前缀/防篡改/冻结性/404/422、消费者领取/确认/租约过期/并发、并发事务等用例
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -831,6 +1010,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - **快照敏感词遮盖**：`POST /snapshots/{snapshot_id}/redactions` 在只读事务内取出快照 `1..watermark` 冻结的生效文本，按序号把相邻字幕（中间无缺口）无分隔拼接成分段，缺口截断分段；在每段上对去重词表（1~20 项、每项 1~128 码点）用 `str.find` 逐码点枚举全部重叠命中（每次命中后仅前进一位），覆盖区间取并集后把每个被覆盖码点替换为一个 `*`（长度不变），再按各字幕原码点长度拆回原序号。遮盖先于分页完成，`after` / `limit`（1~100）只截取结果页，`next_after` 在还有后续条目时指向本页末序号；全程不写入，快照与当前字幕不受影响。
 - **剪辑字幕导出**：`POST /snapshots/{snapshot_id}/edits` 在只读事务内取出快照内全部字幕行（`kind='subtitle'`）冻结的生效文本，先在内存中校验 `timings` 恰好覆盖其 seq 集合（重复 / 缺失 / 多余均 422 `timings_mismatch`，快照不存在 404），再按输入顺序遍历 `clips` 并维护成片累计偏移：每条字幕与当前 clip 取左闭右开交集 `[max(start), min(end))`，非空才生成 cue 并平移 `交集 - clip.start + 偏移`；跨片段自然拆分、重复 clip 在不同偏移处保留副本、重叠字幕各自成 cue 不合并，最后按 `(start_ms, clip_index, seq)` 排序返回。`format=vtt` 时把排序后的 cue 渲染为 WebVTT（`HH:MM:SS.mmm` 时间戳，正文转义 `&` `<` `>`），以 `text/vtt` 直接输出；全程不写入，快照与当前字幕不受影响。
 - **快照字幕引用迁移**：`POST /snapshots/{snapshot_id}/quote-migrations` 在单个只读事务内取出源 / 目标两个快照的元数据与全部 `snapshot_items` 冻结生效文本：任一快照不存在 404、频道不一致 409。源引用提取先校验序号区间落在源快照水位线内且逐序号都是字幕行（缺口 / 空洞即 422 `invalid_quote_range`），再按 Unicode 码点（Python `str` 切片）校验起止偏移不越界——首条取 `text[start_offset:]`、末条取 `text[:end_offset]`、中间整条（空字幕照常），拼接结果为空一律 422。目标匹配复用与遮盖相同的“分段”模型：相邻字幕（中间无缺口）无分隔拼接、缺口截断分段；在每段上以 `str.find` 逐码点枚举引用的全部重叠出现（每次只前进一位），并把拼接下标映射回序号 / 偏移——起点取最后一个起点不大于该下标的字幕（落在边界归属后一条），终点取最后一个起点严格小于该下标的字幕（落在边界归属引用末字符所在的前一条）。最多枚举到 2 个命中即可判定：1 个为 `found`、0 个为 `missing`、≥2 个为 `ambiguous`（不任选位置）；全程不写入，两个快照与当前定稿 / 更正均不受影响。
+- **快照 Merkle 封存**：`GET /snapshots/{snapshot_id}/merkle[?seq=N]` 只读取 `snapshot_items` 冻结行（`ORDER BY seq`），在 `app/merkle.py` 中纯函数计算，不产生任何写入，故相同请求确定、快照后的定稿 / 更正 / 缺口不可能影响旧根。叶负载为固定 9 键（含 `snapshot_id`、字幕的 revision/original/effective/correction_version 与缺口的 gap_start/gap_end；缺口叶字幕字段为 `null`，空字幕为 `""`，二者哈希不同），由自实现的 canonical JSON 序列化器（紧凑、固定键序、不转义非 ASCII、不做归一化）编码为 UTF-8；叶子用域前缀 `snapshot-merkle:v1:leaf:`、内部节点用 `snapshot-merkle:v1:node:` 后接左右各 32 字节**原始摘要**，域前缀使叶 / 内部摘要不可互相冒充；建树时每层两两配对，奇数长度（>1）复制末叶与自身配对，单叶树根即叶摘要，空快照返回常量根 `SHA-256("snapshot-merkle:v1:empty")`。`?seq=N` 时额外返回冻结条目（`leaf`）、规范负载串（`leaf_canonical_payload`，便于直接哈希核对）、叶哈希与自叶向根的兄弟路径（每步 `level/side/hash/duplicated`）；`app/merkle.py` 另提供 `verify_inclusion_proof` 严格参考实现（方向与复制位由 index/leaf_count 推导，路径过长、篡改均失败）。方案标识 `snapshot-merkle:v1` 随响应返回，便于未来版本共存。
 - **命名消费者拉取游标**：`consumers(channel, consumer, cursor, lease_token, lease_from, lease_to, lease_expires_at, …)` 每消费者一行。领取在单个 `BEGIN IMMEDIATE` 事务内「注册消费者 → 校验无未过期租约 → 复用定稿查询截取 `cursor` 后的连续批次（含缺口标记）→ 写入新租约（UUID 令牌 + 过期时刻 epoch 秒）」，并发领取同一消费者只有一个能拿到租约；确认同样单事务完成全部校验（游标一致 → 有租约 → 令牌匹配 → 未过期 → `new_cursor` 在批次范围内）后推进游标并清空租约，任何一步失败都不改写状态。租约过期由应用层按 `lease_expires_at` 判定，过期后同一未确认批次可被重新领取并签发新令牌（旧令牌随之失效），确认成功即清空租约、下一批从新游标继续，实现至少一次交付。
 - **稿件校稿对齐**：`POST /snapshots/{snapshot_id}/script-alignments` 在只读事务内取出快照全部字幕行（`kind='subtitle'`）冻结的生效文本，按序号升序与 1～100 条稿件行做二维动态规划：状态 `(i,j)` 的入边为“跳过字幕（代价为其码点数）/ 跳过稿件行（代价为其码点数）/ 行 i 匹配连续 1～max 条同段字幕（块无分隔拼接，序号不连续即跨缺口、不可行，代价为码点 Levenshtein 距离）”。每个单元除最小总代价外还携带跳过项数、合并字幕数（Σ(k−1)）与匹配块 `(start_seq,end_seq)` 序列，并列时依次按这三项 + 序号序列字典序取小；字典序比较用持久化 Trie + LCP 记忆化、节点只在候选胜出时实体化。编辑距离优先调用 `rapidfuzz` 的 C 实现并以紧上界 `score_cutoff` 带状早停，无该依赖时回退到等价的纯 Python 带状 DP。回溯码表重建逐行起止序号 / 距离与未匹配稿件行下标、未匹配字幕序号；全程不写入，快照与当前字幕不受影响。
 - **存储**：`channels`（水位线）、`fragments`（待定稿缓冲）、`finalized`（定稿，不可变）、`gap_decisions` / `gaps`（永久缺口）、`corrections`（追加式更正）、`correction_batches` / `correction_batch_items`（批量更正批次与逐项冻结记录，不可变）、`snapshots` / `snapshot_items` / `snapshot_corrections`（不可变发布快照）、`consumers`（命名消费者拉取游标）十二张表；WAL 模式 + `busy_timeout`。建表语句与触发器均幂等（`CREATE TABLE/TRIGGER IF NOT EXISTS`），已部署实例重启后自动补建新表与触发器，原有数据与接口行为不受影响。

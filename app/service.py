@@ -103,6 +103,24 @@
   匹配序号字典序更小”择优；返回逐行起止序号 / 距离及未匹配稿件行
   下标与未匹配字幕序号。
 
+快照 Merkle 封存（snapshot_merkle）不变式：
+- 树根 / 叶哈希 / 包含证明都是纯只读计算：只读取 snapshot_items 中
+  冻结的 1..watermark 条目，快照表与定稿 / 更正原表均不被修改，相同
+  请求结果确定；快照创建后任何新定稿 / 新更正 / 新缺口都不可能改变
+  既有快照的根（叶负载只含快照 ID 与快照时刻冻结字段）；
+- 叶子按 seq=1..watermark 覆盖全部字幕与缺口，字幕 / 缺口统一占叶位；
+  叶负载为固定 9 键（snapshot_id、seq、kind、revision、original_text、
+  effective_text、correction_version、gap_start、gap_end）的规范序列化
+  （跨语言可复算，规则见 app/merkle.py 与 README），缺口叶的字幕字段
+  是 JSON null（与空文本 "" 严格区分）；
+- 叶子与内部节点使用不同域前缀（leaf / node），奇数层复制末叶与自身
+  配对，单叶树根即叶摘要本身；watermark=0 的空快照返回固定根
+  SHA-256("snapshot-merkle:v1:empty")；
+- 指定 seq 时额外返回冻结条目（即叶负载）、叶哈希及自叶向根的兄弟路径
+  （每步含 level、side=left/right、兄弟 hash 及 duplicated 复制标记），
+  供下游离线复算验真；快照不存在返回 404，seq 超出快照水位线返回
+  404 seq_out_of_snapshot，非法 seq（<1 等）由 HTTP 层返回 422。
+
 命名消费者拉取游标（consumers）不变式：
 - 每个 (channel, consumer) 的 cursor 只能经确认接口单调推进，且只能
   推进到当前租约批次 [lease_from, lease_to] 内的序号；
@@ -122,6 +140,14 @@ import uuid
 from datetime import datetime, timezone
 
 from .db import read_tx, write_tx
+from . import merkle
+from .merkle import (
+    canonical_dumps,
+    hash_leaf,
+    inclusion_proof,
+    leaf_entry,
+    merkle_root,
+)
 
 
 class CorrectionError(Exception):
@@ -2133,6 +2159,78 @@ def _banded_distance(a: str, b: str, upper: "int | None" = None) -> int:
         prev_row, cur_row = cur_row, prev_row
     result = prev_row[lb]
     return upper if result >= upper else result
+
+
+# ---------- 快照 Merkle 封存 ----------
+
+
+def snapshot_merkle(snapshot_id: str, seq: "int | None" = None) -> dict:
+    """返回快照的 SHA-256 Merkle 根；指定 seq 时附冻结条目与包含证明。
+
+    纯只读：只读取 snapshot_items 冻结行，不产生任何写入。叶负载 / 域
+    前缀 / 奇数层复制末叶 / 空快照固定根的完整规则见 app/merkle.py 与
+    README（方案 snapshot-merkle:v1）。快照不存在 -> 404
+    snapshot_not_found；seq 超出快照水位线（含空快照的任意 seq）->
+    404 seq_out_of_snapshot；非法 seq（<1）由 HTTP 层返回 422。
+    """
+    with read_tx() as conn:
+        meta = _get_snapshot_meta(conn, snapshot_id)
+        channel, watermark = meta["channel"], meta["watermark"]
+
+        if seq is not None and (seq < 1 or seq > watermark):
+            raise SnapshotError(
+                "seq_out_of_snapshot",
+                f"序号 {seq} 超出快照 {snapshot_id} 的水位线 {watermark}",
+                status_code=404,
+            )
+
+        rows = conn.execute(
+            """
+            SELECT seq, kind, revision, original_text, effective_text,
+                   correction_version, start_seq, end_seq
+            FROM snapshot_items
+            WHERE snapshot_id = ?
+            ORDER BY seq
+            """,
+            (snapshot_id,),
+        ).fetchall()
+
+    entries = [leaf_entry(snapshot_id, row) for row in rows]
+    leaf_hashes = [hash_leaf(entry) for entry in entries]
+    root_hex = merkle_root(leaf_hashes)
+
+    result = {
+        "mode": "root",
+        "scheme": merkle.SCHEME,
+        "hash_algorithm": merkle.HASH_ALGORITHM,
+        "hash_encoding": merkle.HASH_ENCODING,
+        "snapshot_id": snapshot_id,
+        "channel": channel,
+        "watermark": watermark,
+        "leaf_count": watermark,
+        "root": root_hex,
+        "empty": watermark == 0,
+    }
+
+    if seq is not None:
+        index = seq - 1
+        entry = entries[index]
+        leaf_hex = leaf_hashes[index]
+        result.update(
+            {
+                "mode": "proof",
+                "seq": seq,
+                "leaf_index": index,
+                "leaf": entry,
+                "leaf_canonical_payload": canonical_dumps(entry).decode("utf-8"),
+                "leaf_hash": leaf_hex,
+                "proof": {
+                    "root": root_hex,
+                    "path": inclusion_proof(leaf_hashes, index),
+                },
+            }
+        )
+    return result
 
 
 # ---------- 命名消费者拉取游标 ----------
